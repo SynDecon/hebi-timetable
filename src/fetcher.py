@@ -69,10 +69,12 @@ def _follow_cas_landing(session: requests.Session, response: requests.Response) 
         tag_text = tag.group(0) if tag else ""
         action = re.search(r"action=[\"']([^\"']*)[\"']", tag_text, re.I)
         method = re.search(r"method=[\"']([^\"']+)[\"']", tag_text, re.I)
-        fields = re.findall(
-            r"<input[^>]*name=[\"']([^\"']+)[\"'][^>]*value=[\"']([^\"']*)[\"']", text, re.I
-        )
-        data = {key: html_lib.unescape(value) for key, value in fields}
+        data = {}
+        for item in re.finditer(r"<input[^>]*>", text, re.I):
+            name = re.search(r"name=[\"']([^\"']+)[\"']", item.group(0), re.I)
+            value = re.search(r"value=[\"']([^\"']*)[\"']", item.group(0), re.I)
+            if name:
+                data[name.group(1)] = html_lib.unescape(value.group(1)) if value else ""
         target = urljoin(response.url, html_lib.unescape(action.group(1))) if action and action.group(1) else response.url
         if (method.group(1).lower() if method else "get") == "post":
             return _request(session, "POST", target, data=data, headers=_headers()), "form-post"
@@ -167,10 +169,19 @@ def create_session(username: str, password: str) -> requests.Session:
         )
 
     cas_url = f"{AUTH_BASE}/authserver/authz/cas/login?service={quote(SERVICE_URL, safe='')}"
-    landing = _request(session, "GET", cas_url, headers=_headers(f"{AUTH_BASE}/authserver/login"))
+    cas_headers = _headers(f"{AUTH_BASE}/authserver/login")
+    if token:
+        cas_headers["Authorization"] = f"Bearer {token}"
+    landing = _request(session, "GET", cas_url, headers=cas_headers)
     landing, note = _follow_cas_landing(session, landing)
     session.cas_probe = _cas_probe(landing, note, session)
     _request(session, "GET", SERVICE_URL, headers=_headers(f"{AUTH_BASE}/authserver/login"))
+    home = _request(session, "GET", f"{EAMS_BASE}/eams/homeExt.action", headers=_headers())
+    home.encoding = "utf-8"
+    session.eams_probe = (
+        f"home={home.status_code}{urlsplit(home.url).path} len={len(home.text)} "
+        f"mytable={'courseTableForStd' in home.text} login={'统一身份认证' in home.text}"
+    )
     return session
 
 
@@ -218,4 +229,7 @@ def fetch_course_table(session: requests.Session) -> str:
         return fallback.text
 
     detail = " | ".join(_diag(response) for response in (page, table, fallback))
-    raise FetchError(f"课表页中没有 TaskActivity 数据；{detail} | {getattr(session, 'cas_probe', '')}")
+    raise FetchError(
+        f"课表页中没有 TaskActivity 数据；{detail} | "
+        f"{getattr(session, 'cas_probe', '')} | {getattr(session, 'eams_probe', '')}"
+    )
