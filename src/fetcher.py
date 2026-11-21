@@ -85,9 +85,15 @@ def _follow_cas_landing(session: requests.Session, response: requests.Response) 
 def _cas_probe(response: requests.Response, note: str, session: requests.Session) -> str:
     text = response.text
     chains = " > ".join(f"{hop.status_code}{urlsplit(hop.url).path}" for hop in response.history + [response])
+    title = re.search(r"<title>(.*?)</title>", text, re.S | re.I)
+    inputs = re.findall(r"<input[^>]*name=[\"']([^\"']+)[\"']", text, re.I)
+    keywords = ",".join(
+        word for word in ("登录", "无效", "未注册", "未授权", "过期") if word in text
+    )
     return (
         f"cas={chains} note={note} len={len(text)} "
-        f"form={'<form' in text.lower()} ticket={'ticket' in text.lower()} "
+        f"title={title.group(1).strip()[:30] if title else ''} "
+        f"inputs={','.join(inputs[:8])} kw={keywords} ticket={'ticket' in text.lower()} "
         f"cookies={','.join(sorted(session.cookies.keys()))}"
     )
 
@@ -168,13 +174,29 @@ def create_session(username: str, password: str) -> requests.Session:
             "user", quote('{"username":"%s"}' % username, safe=""), domain="39.164.230.243", path="/"
         )
 
-    cas_url = f"{AUTH_BASE}/authserver/authz/cas/login?service={quote(SERVICE_URL, safe='')}"
-    cas_headers = _headers(f"{AUTH_BASE}/authserver/login")
-    if token:
-        cas_headers["Authorization"] = f"Bearer {token}"
-    landing = _request(session, "GET", cas_url, headers=cas_headers)
-    landing, note = _follow_cas_landing(session, landing)
-    session.cas_probe = _cas_probe(landing, note, session)
+    try:
+        raw_cookies = response.raw.headers.getlist("Set-Cookie")
+    except AttributeError:
+        raw_cookies = []
+    set_names = sorted({item.split("=", 1)[0].strip() for item in raw_cookies if "=" in item})
+    session.signin_probe = (
+        f"setcookies={','.join(set_names)} token_len={len(token)} "
+        f"dots={token.count('.')} plus={'+' in token}"
+    )
+
+    probes = []
+    for service in (SERVICE_URL, f"{EAMS_BASE}/eams/homeExt.action"):
+        cas_url = f"{AUTH_BASE}/authserver/authz/cas/login?service={quote(service, safe='')}"
+        cas_headers = _headers(f"{AUTH_BASE}/authserver/login")
+        if token:
+            cas_headers["Authorization"] = f"Bearer {token}"
+        landing = _request(session, "GET", cas_url, headers=cas_headers)
+        landing, note = _follow_cas_landing(session, landing)
+        probes.append(_cas_probe(landing, note, session))
+        if note != "none":
+            break
+    session.cas_probe = " || ".join(probes)
+
     _request(session, "GET", SERVICE_URL, headers=_headers(f"{AUTH_BASE}/authserver/login"))
     home = _request(session, "GET", f"{EAMS_BASE}/eams/homeExt.action", headers=_headers())
     home.encoding = "utf-8"
@@ -231,5 +253,6 @@ def fetch_course_table(session: requests.Session) -> str:
     detail = " | ".join(_diag(response) for response in (page, table, fallback))
     raise FetchError(
         f"课表页中没有 TaskActivity 数据；{detail} | "
+        f"{getattr(session, 'signin_probe', '')} | "
         f"{getattr(session, 'cas_probe', '')} | {getattr(session, 'eams_probe', '')}"
     )
