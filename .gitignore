@@ -4,5 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 output/*.tmp
+output/debug/
+_debug_fetch.py
 河南理工大学鹤壁工程技术学院教务管理系统.html
 河南理工大学鹤壁工程技术学院教务管理系统_files/

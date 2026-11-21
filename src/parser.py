@@ -13,6 +13,7 @@ _INDEX_RE = re.compile(r"index\s*=\s*([0-9*+\s]+);")
 _SEMESTER_RE = re.compile(r"semester\.id=(\d+)")
 _IDS_RE = re.compile(r"[?&]ids=(\d+)")
 _MARSHAL_FROM_RE = re.compile(r"marshalTable\(\s*(\d+)\s*,")
+_TABLE_IDS_RE = re.compile(r"""addInput\(\s*form\s*,\s*["']ids["']\s*,\s*["'](\d+)["']""")
 
 
 @dataclass
@@ -86,6 +87,11 @@ def parse_semester_params(html: str) -> tuple[str | None, str | None]:
         semester.group(1) if semester else None,
         ids.group(1) if ids else None,
     )
+
+
+def parse_table_ids(html: str) -> str | None:
+    found = _TABLE_IDS_RE.search(html)
+    return found.group(1) if found else None
 
 
 def _find_activity_bodies(html: str) -> list[tuple[int, int, str]]:

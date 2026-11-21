@@ -9,7 +9,7 @@ import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-from .parser import parse_semester_params
+from .parser import parse_semester_params, parse_table_ids
 
 AUTH_BASE = "http://39.164.230.243:9527"
 EAMS_BASE = "http://39.164.230.243:91"
@@ -233,18 +233,55 @@ def fetch_course_table(session: requests.Session) -> str:
     if "TaskActivity" in page.text:
         return page.text
 
-    semester_id, ids = parse_semester_params(page.text)
-    params = {"ignoreHead": "1", "setting.kind": "std", "startWeek": ""}
+    semester_match = re.search(r"getSemesters\([^)]*?value\s*:\s*\"(\d+)\"", page.text)
+    semester_id = semester_match.group(1) if semester_match else None
+    if not semester_id:
+        semester_match = re.search(r"semester\.id=(\d+)", page.text)
+        semester_id = semester_match.group(1) if semester_match else None
+
+    ids = parse_table_ids(page.text)
+    if not ids:
+        _, ids = parse_semester_params(page.text)
+
+    form = {
+        "ignoreHead": "1",
+        "setting.kind": "std",
+        "startWeek": "",
+        "project.id": "",
+    }
     if semester_id:
-        params["semester.id"] = semester_id
+        form["semester.id"] = semester_id
     if ids:
-        params["ids"] = ids
+        form["ids"] = ids
+
+    submitted = _request(
+        session,
+        "POST",
+        f"{EAMS_BASE}/eams/courseTableForStd!courseTable.action",
+        data=form,
+        headers={"Referer": f"{EAMS_BASE}/eams/courseTableForStd.action"},
+    )
+    submitted.encoding = "utf-8"
+    if _looks_like_login(submitted.text):
+        raise LoginError("提交课表条件后要求重新登录")
+    if "TaskActivity" in submitted.text:
+        return submitted.text
+
+    semester_from_page, ids_from_page = parse_semester_params(submitted.text)
+    if semester_from_page and not semester_id:
+        semester_id = semester_from_page
+    if ids_from_page and not ids:
+        ids = ids_from_page
+    if semester_id:
+        form["semester.id"] = semester_id
+    if ids:
+        form["ids"] = ids
 
     table = _request(
         session,
         "GET",
         f"{EAMS_BASE}/eams/courseTableForStd!courseTable.action",
-        params=params,
+        params=form,
         headers={"Referer": f"{EAMS_BASE}/eams/courseTableForStd.action"},
     )
     table.encoding = "utf-8"
@@ -264,9 +301,9 @@ def fetch_course_table(session: requests.Session) -> str:
     if "TaskActivity" in fallback.text:
         return fallback.text
 
-    detail = " | ".join(_diag(response) for response in (page, table, fallback))
+    detail = " | ".join(_diag(response) for response in (page, submitted, table, fallback))
     raise FetchError(
-        f"课表页中没有 TaskActivity 数据；{detail} | "
+        f"课表页中没有 TaskActivity 数据；semester={semester_id} ids={'yes' if ids else 'no'}；{detail} | "
         f"{getattr(session, 'signin_probe', '')} | "
         f"{getattr(session, 'cas_probe', '')} | {getattr(session, 'eams_probe', '')}"
     )
