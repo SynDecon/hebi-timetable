@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 from Crypto.Cipher import AES
@@ -30,6 +30,19 @@ def _request(session: requests.Session, method: str, url: str, **kwargs):
     except requests.RequestException as exc:
         # 公开仓库的 Actions 日志会公开，URL 里的 ids 参数是学号，不能带进异常信息
         raise FetchError(f"请求失败 {method} {url.split('?')[0]}: {type(exc).__name__}") from None
+
+
+def _truthy(value) -> bool:
+    return value not in (None, False, 0, "", "0", "false", "False")
+
+
+def _diag(response: requests.Response) -> str:
+    text = response.text
+    return (
+        f"status={response.status_code} path={urlsplit(response.url).path} "
+        f"len={len(text)} tasks={text.count('TaskActivity')} "
+        f"semester={'semester.id=' in text} iframe={'<iframe' in text}"
+    )
 
 
 def _encrypt_password(password: str) -> str:
@@ -85,7 +98,22 @@ def create_session(username: str, password: str) -> requests.Session:
     if body.get("code") != 0:
         raise LoginError(f"登录失败: {body.get('message') or body}")
 
-    token = (body.get("data") or {}).get("token") or ""
+    data = body.get("data") or {}
+    blocks = []
+    if _truthy(data.get("secAuth")):
+        blocks.append("二次认证")
+    if _truthy(data.get("noSingleLogin")):
+        blocks.append("单处登录确认")
+    if str(data.get("editPwd", "0")) in {"1", "2", "3"}:
+        blocks.append("强制修改密码")
+    if _truthy(data.get("showInfo")):
+        blocks.append("完善资料")
+    if _truthy(data.get("userInfoConfim")):
+        blocks.append("身份信息确认")
+    if blocks:
+        raise LoginError("密码正确，但登录被额外校验拦截：" + "、".join(blocks))
+
+    token = data.get("token") or ""
     if token:
         for name in ("congress", "token"):
             session.cookies.set(name, quote(token, safe=""), domain="39.164.230.243", path="/")
@@ -106,6 +134,8 @@ def fetch_course_table(session: requests.Session) -> str:
     page.encoding = "utf-8"
     if _looks_like_login(page.text):
         raise LoginError("未获得教务系统会话，登录流程未生效")
+    if "TaskActivity" in page.text:
+        return page.text
 
     semester_id, ids = parse_semester_params(page.text)
     params = {"ignoreHead": "1", "setting.kind": "std", "startWeek": ""}
@@ -119,10 +149,24 @@ def fetch_course_table(session: requests.Session) -> str:
         "GET",
         f"{EAMS_BASE}/eams/courseTableForStd!courseTable.action",
         params=params,
+        headers={"Referer": f"{EAMS_BASE}/eams/courseTableForStd.action"},
     )
     table.encoding = "utf-8"
     if _looks_like_login(table.text):
         raise LoginError("课表页要求重新登录")
-    if "TaskActivity" not in table.text:
-        raise FetchError("课表页中没有 TaskActivity 数据")
-    return table.text
+    if "TaskActivity" in table.text:
+        return table.text
+
+    fallback = _request(
+        session,
+        "GET",
+        f"{EAMS_BASE}/eams/courseTableForStd!courseTable.action",
+        params={"ignoreHead": "1", "setting.kind": "std"},
+        headers={"Referer": f"{EAMS_BASE}/eams/courseTableForStd.action"},
+    )
+    fallback.encoding = "utf-8"
+    if "TaskActivity" in fallback.text:
+        return fallback.text
+
+    detail = " | ".join(_diag(response) for response in (page, table, fallback))
+    raise FetchError(f"课表页中没有 TaskActivity 数据；{detail}")
