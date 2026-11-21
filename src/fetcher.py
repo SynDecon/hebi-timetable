@@ -24,6 +24,14 @@ class FetchError(RuntimeError):
     pass
 
 
+def _request(session: requests.Session, method: str, url: str, **kwargs):
+    try:
+        return session.request(method, url, timeout=TIMEOUT, **kwargs)
+    except requests.RequestException as exc:
+        # 公开仓库的 Actions 日志会公开，URL 里的 ids 参数是学号，不能带进异常信息
+        raise FetchError(f"请求失败 {method} {url.split('?')[0]}: {type(exc).__name__}") from None
+
+
 def _encrypt_password(password: str) -> str:
     cipher = AES.new(AES_KEY, AES.MODE_ECB)
     encrypted = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
@@ -48,7 +56,7 @@ def create_session(username: str, password: str) -> requests.Session:
     session = requests.Session()
     session.headers.update(_headers())
 
-    captcha = session.get(f"{AUTH_BASE}/authserver/captcha", timeout=TIMEOUT)
+    captcha = _request(session, "GET", f"{AUTH_BASE}/authserver/captcha")
     try:
         state = captcha.json().get("data", {}).get("state", "")
     except ValueError as exc:
@@ -63,11 +71,12 @@ def create_session(username: str, password: str) -> requests.Session:
         "remeberMe": "0",
         "serviceUrl": SERVICE_URL,
     }
-    response = session.post(
+    response = _request(
+        session,
+        "POST",
         f"{AUTH_BASE}/authserver/login/signin",
         json=payload,
         headers=_headers(f"{AUTH_BASE}/#/authserver/login"),
-        timeout=TIMEOUT,
     )
     try:
         body = response.json()
@@ -84,7 +93,7 @@ def create_session(username: str, password: str) -> requests.Session:
             "user", quote('{"username":"%s"}' % username, safe=""), domain="39.164.230.243", path="/"
         )
 
-    session.get(SERVICE_URL, headers=_headers(f"{AUTH_BASE}/authserver/login"), timeout=TIMEOUT)
+    _request(session, "GET", SERVICE_URL, headers=_headers(f"{AUTH_BASE}/authserver/login"))
     return session
 
 
@@ -93,7 +102,7 @@ def _looks_like_login(text: str) -> bool:
 
 
 def fetch_course_table(session: requests.Session) -> str:
-    page = session.get(f"{EAMS_BASE}/eams/courseTableForStd.action", timeout=TIMEOUT)
+    page = _request(session, "GET", f"{EAMS_BASE}/eams/courseTableForStd.action")
     page.encoding = "utf-8"
     if _looks_like_login(page.text):
         raise LoginError("未获得教务系统会话，登录流程未生效")
@@ -105,10 +114,11 @@ def fetch_course_table(session: requests.Session) -> str:
     if ids:
         params["ids"] = ids
 
-    table = session.get(
+    table = _request(
+        session,
+        "GET",
         f"{EAMS_BASE}/eams/courseTableForStd!courseTable.action",
         params=params,
-        timeout=TIMEOUT,
     )
     table.encoding = "utf-8"
     if _looks_like_login(table.text):
