@@ -1,0 +1,58 @@
+name: 更新课表
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 抓取并生成
+        id: fetch
+        env:
+          SCHOOL_USER: ${{ secrets.SCHOOL_USER }}
+          SCHOOL_PASS: ${{ secrets.SCHOOL_PASS }}
+        run: python -m src.main
+
+      - name: 打包
+        if: steps.fetch.outputs.valid == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: output
+
+      - name: 发布
+        if: steps.fetch.outputs.valid == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: 错误信息
+        if: failure()
+        run: echo "::error::课表同步失败，线上文件未更新。${{ steps.fetch.outputs.error }}"
+
+      - name: 清理缓存
+        if: always()
+        run: rm -rf src/__pycache__ .cache output/*.tmp
