@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
-from urllib.parse import quote, urlsplit
+import html as html_lib
+import re
+from urllib.parse import quote, urljoin, urlsplit
 
 import requests
 from Crypto.Cipher import AES
@@ -42,6 +44,49 @@ def _diag(response: requests.Response) -> str:
         f"status={response.status_code} path={urlsplit(response.url).path} "
         f"len={len(text)} tasks={text.count('TaskActivity')} "
         f"semester={'semester.id=' in text} iframe={'<iframe' in text}"
+    )
+
+
+def _follow_cas_landing(session: requests.Session, response: requests.Response) -> tuple[requests.Response, str]:
+    if response.status_code != 200:
+        return response, "no-200"
+    text = response.text
+    jump = re.search(
+        r"location\.(?:href\s*=\s*|replace\s*\(\s*)[\"']([^\"']+)[\"']", text, re.I
+    )
+    if jump:
+        target = urljoin(response.url, html_lib.unescape(jump.group(1)))
+        return _request(session, "GET", target, headers=_headers()), "js-jump"
+    meta = re.search(
+        r"http-equiv=[\"']refresh[\"'][^>]*content=[\"'][^\"']*url=([^\"'>]+)", text, re.I
+    )
+    if meta:
+        target = urljoin(response.url, html_lib.unescape(meta.group(1).strip()))
+        return _request(session, "GET", target, headers=_headers()), "meta-refresh"
+    names = re.findall(r"<input[^>]*name=[\"']([^\"']+)[\"']", text, re.I)
+    if names and "ticket" in names:
+        tag = re.search(r"<form[^>]*>", text, re.I)
+        tag_text = tag.group(0) if tag else ""
+        action = re.search(r"action=[\"']([^\"']*)[\"']", tag_text, re.I)
+        method = re.search(r"method=[\"']([^\"']+)[\"']", tag_text, re.I)
+        fields = re.findall(
+            r"<input[^>]*name=[\"']([^\"']+)[\"'][^>]*value=[\"']([^\"']*)[\"']", text, re.I
+        )
+        data = {key: html_lib.unescape(value) for key, value in fields}
+        target = urljoin(response.url, html_lib.unescape(action.group(1))) if action and action.group(1) else response.url
+        if (method.group(1).lower() if method else "get") == "post":
+            return _request(session, "POST", target, data=data, headers=_headers()), "form-post"
+        return _request(session, "GET", target, params=data, headers=_headers()), "form-get"
+    return response, "none"
+
+
+def _cas_probe(response: requests.Response, note: str, session: requests.Session) -> str:
+    text = response.text
+    chains = " > ".join(f"{hop.status_code}{urlsplit(hop.url).path}" for hop in response.history + [response])
+    return (
+        f"cas={chains} note={note} len={len(text)} "
+        f"form={'<form' in text.lower()} ticket={'ticket' in text.lower()} "
+        f"cookies={','.join(sorted(session.cookies.keys()))}"
     )
 
 
@@ -122,7 +167,9 @@ def create_session(username: str, password: str) -> requests.Session:
         )
 
     cas_url = f"{AUTH_BASE}/authserver/authz/cas/login?service={quote(SERVICE_URL, safe='')}"
-    _request(session, "GET", cas_url, headers=_headers(f"{AUTH_BASE}/authserver/login"))
+    landing = _request(session, "GET", cas_url, headers=_headers(f"{AUTH_BASE}/authserver/login"))
+    landing, note = _follow_cas_landing(session, landing)
+    session.cas_probe = _cas_probe(landing, note, session)
     _request(session, "GET", SERVICE_URL, headers=_headers(f"{AUTH_BASE}/authserver/login"))
     return session
 
@@ -171,4 +218,4 @@ def fetch_course_table(session: requests.Session) -> str:
         return fallback.text
 
     detail = " | ".join(_diag(response) for response in (page, table, fallback))
-    raise FetchError(f"课表页中没有 TaskActivity 数据；{detail}")
+    raise FetchError(f"课表页中没有 TaskActivity 数据；{detail} | {getattr(session, 'cas_probe', '')}")
