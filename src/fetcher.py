@@ -121,6 +121,8 @@ def create_session(username: str, password: str) -> requests.Session:
             "user", quote('{"username":"%s"}' % username, safe=""), domain="39.164.230.243", path="/"
         )
 
+    cas_url = f"{AUTH_BASE}/authserver/authz/cas/login?service={quote(SERVICE_URL, safe='')}"
+    _request(session, "GET", cas_url, headers=_headers(f"{AUTH_BASE}/authserver/login"))
     _request(session, "GET", SERVICE_URL, headers=_headers(f"{AUTH_BASE}/authserver/login"))
     return session
 
