@@ -63,22 +63,33 @@ def _follow_cas_landing(session: requests.Session, response: requests.Response) 
     if meta:
         target = urljoin(response.url, html_lib.unescape(meta.group(1).strip()))
         return _request(session, "GET", target, headers=_headers()), "meta-refresh"
-    names = re.findall(r"<input[^>]*name=[\"']([^\"']+)[\"']", text, re.I)
-    if names and "ticket" in names:
-        tag = re.search(r"<form[^>]*>", text, re.I)
-        tag_text = tag.group(0) if tag else ""
-        action = re.search(r"action=[\"']([^\"']*)[\"']", tag_text, re.I)
-        method = re.search(r"method=[\"']([^\"']+)[\"']", tag_text, re.I)
-        data = {}
-        for item in re.finditer(r"<input[^>]*>", text, re.I):
-            name = re.search(r"name=[\"']([^\"']+)[\"']", item.group(0), re.I)
-            value = re.search(r"value=[\"']([^\"']*)[\"']", item.group(0), re.I)
-            if name:
-                data[name.group(1)] = html_lib.unescape(value.group(1)) if value else ""
-        target = urljoin(response.url, html_lib.unescape(action.group(1))) if action and action.group(1) else response.url
+
+    for item in re.finditer(r"(?:href|action)=[\"']([^\"']+)[\"']", text, re.I):
+        candidate = html_lib.unescape(item.group(1))
+        if "ticket=" in candidate.lower():
+            return _request(session, "GET", urljoin(response.url, candidate), headers=_headers()), "link-ticket"
+
+    ticket_id = re.search(r"[\"'](ST-[A-Za-z0-9._-]{6,})[\"']", text)
+    if ticket_id:
+        sep = "&" if "?" in SERVICE_URL else "?"
+        target = f"{SERVICE_URL}{sep}ticket={ticket_id.group(1)}"
+        return _request(session, "GET", target, headers=_headers()), "var-ticket"
+
+    tag = re.search(r"<form[^>]*>", text, re.I)
+    tag_text = tag.group(0) if tag else ""
+    action = re.search(r"action=[\"']([^\"']*)[\"']", tag_text, re.I)
+    method = re.search(r"method=[\"']([^\"']+)[\"']", tag_text, re.I)
+    action_url = urljoin(response.url, html_lib.unescape(action.group(1))) if action and action.group(1) else response.url
+    data = {}
+    for item in re.finditer(r"<input[^>]*>", text, re.I):
+        name = re.search(r"name=[\"']([^\"']+)[\"']", item.group(0), re.I)
+        value = re.search(r"value=[\"']([^\"']*)[\"']", item.group(0), re.I)
+        if name:
+            data[name.group(1)] = html_lib.unescape(value.group(1)) if value else ""
+    if tag and ("ticket" in data or "ticket" in action_url.lower()):
         if (method.group(1).lower() if method else "get") == "post":
-            return _request(session, "POST", target, data=data, headers=_headers()), "form-post"
-        return _request(session, "GET", target, params=data, headers=_headers()), "form-get"
+            return _request(session, "POST", action_url, data=data, headers=_headers()), "form-ticket"
+        return _request(session, "GET", action_url, params=data, headers=_headers()), "form-ticket"
     return response, "none"
 
 
@@ -87,14 +98,17 @@ def _cas_probe(response: requests.Response, note: str, session: requests.Session
     chains = " > ".join(f"{hop.status_code}{urlsplit(hop.url).path}" for hop in response.history + [response])
     title = re.search(r"<title>(.*?)</title>", text, re.S | re.I)
     inputs = re.findall(r"<input[^>]*name=[\"']([^\"']+)[\"']", text, re.I)
+    form_action = re.search(r"<form[^>]*action=[\"']([^\"']+)", text, re.I)
+    action_path = urlsplit(html_lib.unescape(form_action.group(1))).path if form_action else ""
     keywords = ",".join(
         word for word in ("登录", "无效", "未注册", "未授权", "过期") if word in text
     )
     return (
         f"cas={chains} note={note} len={len(text)} "
         f"title={title.group(1).strip()[:30] if title else ''} "
-        f"inputs={','.join(inputs[:8])} kw={keywords} ticket={'ticket' in text.lower()} "
-        f"cookies={','.join(sorted(session.cookies.keys()))}"
+        f"inputs={','.join(inputs[:8])} action={action_path} kw={keywords} "
+        f"ticket={'ticket' in text.lower()} href_ticket={'ticket=' in text.lower()} "
+        f"st={'ST-' in text} cookies={','.join(sorted(session.cookies.keys()))}"
     )
 
 
