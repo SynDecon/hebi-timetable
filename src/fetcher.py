@@ -228,27 +228,33 @@ def _looks_like_login(text: str) -> bool:
     return "统一身份认证" in text or "authserver/login" in text
 
 
+def _remember_params(session: requests.Session, text: str) -> tuple[str | None, str | None]:
+    semester_id, ids = parse_semester_params(text)
+    ids = ids or parse_table_ids(text)
+    if semester_id:
+        session.semester_id = semester_id
+    if ids:
+        session.ids = ids
+    return semester_id, ids
+
+
 def fetch_course_table(session: requests.Session) -> str:
     page = _request(session, "GET", f"{EAMS_BASE}/eams/courseTableForStd.action")
     page.encoding = "utf-8"
     if _looks_like_login(page.text):
         raise LoginError("未获得教务系统会话，登录流程未生效")
+
+    semester_id, ids = _remember_params(session, page.text)
+    semester_match = re.search(r"getSemesters\([^)]*?value\s*:\s*\"(\d+)\"", page.text)
+    if not semester_id and semester_match:
+        semester_id = semester_match.group(1)
+        session.semester_id = semester_id
+    if not ids:
+        ids = parse_table_ids(page.text)
+        if ids:
+            session.ids = ids
     if "TaskActivity" in page.text:
         return page.text
-
-    semester_match = re.search(r"getSemesters\([^)]*?value\s*:\s*\"(\d+)\"", page.text)
-    semester_id = semester_match.group(1) if semester_match else None
-    if not semester_id:
-        semester_match = re.search(r"semester\.id=(\d+)", page.text)
-        semester_id = semester_match.group(1) if semester_match else None
-
-    ids = parse_table_ids(page.text)
-    if not ids:
-        _, ids = parse_semester_params(page.text)
-    if semester_id:
-        session.semester_id = semester_id
-    if ids:
-        session.ids = ids
 
     form = {
         "ignoreHead": "1",
@@ -271,20 +277,17 @@ def fetch_course_table(session: requests.Session) -> str:
     submitted.encoding = "utf-8"
     if _looks_like_login(submitted.text):
         raise LoginError("提交课表条件后要求重新登录")
-    if "TaskActivity" in submitted.text:
-        return submitted.text
-
-    semester_from_page, ids_from_page = parse_semester_params(submitted.text)
+    semester_from_page, ids_from_page = _remember_params(session, submitted.text)
     if semester_from_page and not semester_id:
         semester_id = semester_from_page
     if ids_from_page and not ids:
         ids = ids_from_page
     if semester_id:
         form["semester.id"] = semester_id
-        session.semester_id = semester_id
     if ids:
         form["ids"] = ids
-        session.ids = ids
+    if "TaskActivity" in submitted.text:
+        return submitted.text
 
     table = _request(
         session,
@@ -296,6 +299,7 @@ def fetch_course_table(session: requests.Session) -> str:
     table.encoding = "utf-8"
     if _looks_like_login(table.text):
         raise LoginError("课表页要求重新登录")
+    _remember_params(session, table.text)
     if "TaskActivity" in table.text:
         return table.text
 
@@ -307,6 +311,7 @@ def fetch_course_table(session: requests.Session) -> str:
         headers={"Referer": f"{EAMS_BASE}/eams/courseTableForStd.action"},
     )
     fallback.encoding = "utf-8"
+    _remember_params(session, fallback.text)
     if "TaskActivity" in fallback.text:
         return fallback.text
 

@@ -50,6 +50,23 @@ def test_probe_without_last_week():
     assert 10 not in probes
 
 
+def test_remember_params():
+    session = _Session()
+    semester_id, ids = fetcher._remember_params(
+        session, 'semester.id=322; bg.form.addInput(form,"ids","97740");'
+    )
+    assert (semester_id, ids) == ("322", "97740")
+    assert (session.semester_id, session.ids) == ("322", "97740")
+
+
+def test_period_form_uses_session():
+    session = _Session()
+    session.semester_id = "322"
+    session.ids = "97740"
+    form = fetcher._period_form("<html></html>", session)
+    assert form and form["semester.id"] == "322" and form["ids"] == "97740"
+
+
 if __name__ == "__main__":
     failed = 0
     for name, func in sorted(globals().items()):
