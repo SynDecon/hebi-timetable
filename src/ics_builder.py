@@ -81,16 +81,15 @@ def _event(block: CourseBlock, dtstart: datetime, dtend: datetime, room: str, we
 def _series(block: CourseBlock, weeks: list[int], semester_start: date, periods: dict, tz: ZoneInfo, now: datetime) -> Event:
     start_hhmm = periods[block.start_period][0]
     end_hhmm = periods[block.end_period][1]
-    first, last = weeks[0], weeks[-1]
-    first_day = semester_start + timedelta(days=(first - 1) * 7 + block.weekday)
-    last_day = semester_start + timedelta(days=(last - 1) * 7 + block.weekday)
+    first_day = semester_start + timedelta(days=(weeks[0] - 1) * 7 + block.weekday)
     event = _event(block, _at(first_day, start_hhmm, tz), _at(first_day, end_hhmm, tz), block.room, weeks, now)
-    until = _at(last_day, start_hhmm, tz).astimezone(dt_timezone.utc)
-    event.add("rrule", {"freq": "WEEKLY", "until": until})
+    if len(weeks) == 1:
+        return event
+    event.add("rrule", {"freq": "WEEKLY", "count": weeks[-1] - weeks[0] + 1})
     present = set(weeks)
     skipped = [
         _at(semester_start + timedelta(days=(week - 1) * 7 + block.weekday), start_hhmm, tz)
-        for week in range(first, last + 1)
+        for week in range(weeks[0] + 1, weeks[-1])
         if week not in present
     ]
     if skipped:
