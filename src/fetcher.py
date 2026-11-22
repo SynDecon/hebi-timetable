@@ -9,13 +9,15 @@ import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-from .parser import parse_semester_params, parse_table_ids
+from .parser import parse_periods, parse_semester_params, parse_table_ids
 
 AUTH_BASE = "http://39.164.230.243:9527"
 EAMS_BASE = "http://39.164.230.243:91"
 SERVICE_URL = f"{EAMS_BASE}/eams/login.action"
 AES_KEY = b"jsmituluzhou2024"
 TIMEOUT = 30
+PERIOD_TIMEOUT = 15
+MAX_WEEKS = 30
 
 
 class LoginError(RuntimeError):
@@ -27,8 +29,9 @@ class FetchError(RuntimeError):
 
 
 def _request(session: requests.Session, method: str, url: str, **kwargs):
+    timeout = kwargs.pop("timeout", TIMEOUT)
     try:
-        return session.request(method, url, timeout=TIMEOUT, **kwargs)
+        return session.request(method, url, timeout=timeout, **kwargs)
     except requests.RequestException as exc:
         # 公开仓库的 Actions 日志会公开，URL 里的 ids 参数是学号，不能带进异常信息
         raise FetchError(f"请求失败 {method} {url.split('?')[0]}: {type(exc).__name__}") from None
@@ -242,6 +245,10 @@ def fetch_course_table(session: requests.Session) -> str:
     ids = parse_table_ids(page.text)
     if not ids:
         _, ids = parse_semester_params(page.text)
+    if semester_id:
+        session.semester_id = semester_id
+    if ids:
+        session.ids = ids
 
     form = {
         "ignoreHead": "1",
@@ -274,8 +281,10 @@ def fetch_course_table(session: requests.Session) -> str:
         ids = ids_from_page
     if semester_id:
         form["semester.id"] = semester_id
+        session.semester_id = semester_id
     if ids:
         form["ids"] = ids
+        session.ids = ids
 
     table = _request(
         session,
@@ -307,3 +316,71 @@ def fetch_course_table(session: requests.Session) -> str:
         f"{getattr(session, 'signin_probe', '')} | "
         f"{getattr(session, 'cas_probe', '')} | {getattr(session, 'eams_probe', '')}"
     )
+
+
+def _period_form(html: str, session: requests.Session) -> dict[str, str] | None:
+    semester_id, ids = parse_semester_params(html)
+    ids = ids or parse_table_ids(html)
+    semester_id = semester_id or getattr(session, "semester_id", None)
+    ids = ids or getattr(session, "ids", None)
+    if not semester_id or not ids:
+        return None
+    return {
+        "ignoreHead": "1",
+        "setting.kind": "std",
+        "startWeek": "",
+        "project.id": "1",
+        "semester.id": semester_id,
+        "ids": ids,
+    }
+
+
+def _fetch_week_periods(session: requests.Session, form: dict[str, str], week: int) -> dict:
+    for _ in range(2):
+        try:
+            response = _request(
+                session,
+                "POST",
+                f"{EAMS_BASE}/eams/courseTableForStd!courseTable.action",
+                data={**form, "startWeek": str(week)},
+                headers={"Referer": f"{EAMS_BASE}/eams/courseTableForStd.action"},
+                timeout=PERIOD_TIMEOUT,
+            )
+            response.encoding = "utf-8"
+            periods = parse_periods(response.text)
+            if periods:
+                return periods
+        except Exception:
+            pass
+    return {}
+
+
+def fetch_week_periods(session: requests.Session, html: str, max_week: int) -> dict[int, dict]:
+    form = _period_form(html, session)
+    if not form:
+        print("节次时间：缺少学期或课表参数，跳过按周解析")
+        return {}
+    max_week = max(1, min(int(max_week), MAX_WEEKS))
+    first = _fetch_week_periods(session, form, 1)
+    if not first:
+        print("节次时间：第 1 周获取失败，跳过按周解析")
+        return {}
+    probes = {1: first}
+    if max_week == 1:
+        return probes
+
+    last = _fetch_week_periods(session, form, max_week)
+    if last:
+        probes[max_week] = last
+    if last and last == first:
+        return probes
+
+    for week in range(2, max_week):
+        current = _fetch_week_periods(session, form, week)
+        if not current:
+            print(f"节次时间：第 {week} 周获取失败，跳过")
+            continue
+        probes[week] = current
+        if current != first:
+            break
+    return probes

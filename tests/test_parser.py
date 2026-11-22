@@ -5,7 +5,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.parser import parse_periods, parse_weeks, weeks_from_bits
+from src.parser import expand_week_periods, parse_periods, parse_weeks, weeks_from_bits
+
+
+SPRING = {1: ("08:00", "08:45"), 6: ("15:00", "15:45")}
+AUTUMN = {1: ("08:00", "08:45"), 6: ("14:30", "15:15")}
 
 
 PERIOD_LABELS = [
@@ -98,6 +102,36 @@ def test_periods_bad_range():
 
 def test_periods_not_found():
     assert parse_periods("<html></html>") == {}
+
+
+def test_week_periods_same():
+    assert expand_week_periods({1: AUTUMN, 4: AUTUMN}, 4) == {week: AUTUMN for week in range(1, 5)}
+
+
+def test_week_periods_switch():
+    assert expand_week_periods({1: SPRING, 3: AUTUMN, 4: AUTUMN}, 4) == {
+        1: SPRING,
+        2: SPRING,
+        3: AUTUMN,
+        4: AUTUMN,
+    }
+
+
+def test_week_periods_missing_middle():
+    assert expand_week_periods({1: SPRING, 4: AUTUMN}, 4) == {
+        1: SPRING,
+        2: SPRING,
+        3: SPRING,
+        4: AUTUMN,
+    }
+
+
+def test_week_periods_missing_first():
+    assert expand_week_periods({2: AUTUMN}, 4) == {}
+
+
+def test_week_periods_single_week():
+    assert expand_week_periods({1: SPRING}, 1) == {1: SPRING}
 
 
 if __name__ == "__main__":

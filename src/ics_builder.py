@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from hashlib import sha1
 from zoneinfo import ZoneInfo
@@ -78,23 +79,49 @@ def _event(block: CourseBlock, dtstart: datetime, dtend: datetime, room: str, we
     return event
 
 
-def _series(block: CourseBlock, weeks: list[int], semester_start: date, periods: dict, tz: ZoneInfo, now: datetime) -> Event:
-    start_hhmm = periods[block.start_period][0]
-    end_hhmm = periods[block.end_period][1]
-    first_day = semester_start + timedelta(days=(weeks[0] - 1) * 7 + block.weekday)
-    event = _event(block, _at(first_day, start_hhmm, tz), _at(first_day, end_hhmm, tz), block.room, weeks, now)
-    if len(weeks) == 1:
-        return event
-    event.add("rrule", {"freq": "WEEKLY", "count": weeks[-1] - weeks[0] + 1})
-    present = set(weeks)
-    skipped = [
-        _at(semester_start + timedelta(days=(week - 1) * 7 + block.weekday), start_hhmm, tz)
-        for week in range(weeks[0] + 1, weeks[-1])
-        if week not in present
-    ]
-    if skipped:
-        event.add("exdate", skipped)
-    return event
+def _series(
+    block: CourseBlock,
+    weeks: list[int],
+    semester_start: date,
+    periods_for_week: Callable[[int], dict[int, tuple[str, str]]],
+    tz: ZoneInfo,
+    now: datetime,
+) -> list[Event]:
+    groups: list[tuple[list[int], str, str]] = []
+    for week in weeks:
+        periods = periods_for_week(week)
+        start_hhmm = periods[block.start_period][0]
+        end_hhmm = periods[block.end_period][1]
+        if groups and groups[-1][1] == start_hhmm and groups[-1][2] == end_hhmm:
+            groups[-1][0].append(week)
+        else:
+            groups.append(([week], start_hhmm, end_hhmm))
+
+    events: list[Event] = []
+    for index, (group_weeks, start_hhmm, end_hhmm) in enumerate(groups):
+        first_day = semester_start + timedelta(days=(group_weeks[0] - 1) * 7 + block.weekday)
+        event = _event(
+            block,
+            _at(first_day, start_hhmm, tz),
+            _at(first_day, end_hhmm, tz),
+            block.room,
+            group_weeks,
+            now,
+        )
+        if len(groups) > 1:
+            event["uid"] = f"{block.uid}-s{index}"
+        if len(group_weeks) > 1:
+            event.add("rrule", {"freq": "WEEKLY", "count": group_weeks[-1] - group_weeks[0] + 1})
+            present = set(group_weeks)
+            skipped = [
+                _at(semester_start + timedelta(days=(week - 1) * 7 + block.weekday), start_hhmm, tz)
+                for week in range(group_weeks[0] + 1, group_weeks[-1])
+                if week not in present
+            ]
+            if skipped:
+                event.add("exdate", skipped)
+        events.append(event)
+    return events
 
 
 def _modified(block: CourseBlock, week: int, override: dict, semester_start: date, periods: dict, tz: ZoneInfo, now: datetime) -> Event:
@@ -114,11 +141,21 @@ def _modified(block: CourseBlock, week: int, override: dict, semester_start: dat
     return event
 
 
-def build_calendar(blocks: list[CourseBlock], semester: dict, raw_overrides) -> Calendar:
+def build_calendar(
+    blocks: list[CourseBlock],
+    semester: dict,
+    raw_overrides,
+    week_periods: dict[int, dict[int, tuple[str, str]]] | None = None,
+) -> Calendar:
     tzid = str(semester.get("timezone") or "Asia/Shanghai")
     tz = ZoneInfo(tzid)
     semester_start = date.fromisoformat(str(semester["semester_start"]))
     periods = {int(item["index"]): (str(item["start"]), str(item["end"])) for item in semester["periods"]}
+    week_periods = week_periods or {}
+
+    def periods_for_week(week: int) -> dict[int, tuple[str, str]]:
+        custom = week_periods.get(week)
+        return {**periods, **custom} if custom else periods
     overrides = _normalize_overrides(raw_overrides)
     now = datetime.now(dt_timezone.utc)
 
@@ -139,7 +176,8 @@ def build_calendar(blocks: list[CourseBlock], semester: dict, raw_overrides) -> 
         removed = {item["week"] for item in applicable}
         weeks = [week for week in block.weeks if week not in removed]
         if weeks:
-            calendar.add_component(_series(block, weeks, semester_start, periods, tz, now))
+            for event in _series(block, weeks, semester_start, periods_for_week, tz, now):
+                calendar.add_component(event)
         for item in applicable:
             matched.add(id(item))
             week = item["week"]
@@ -147,7 +185,9 @@ def build_calendar(blocks: list[CourseBlock], semester: dict, raw_overrides) -> 
             if item["action"] != "modify" or week not in block.weeks or key in emitted:
                 continue
             emitted.add(key)
-            calendar.add_component(_modified(block, week, item, semester_start, periods, tz, now))
+            calendar.add_component(
+                _modified(block, week, item, semester_start, periods_for_week(week), tz, now)
+            )
 
     for item in overrides:
         if id(item) not in matched:

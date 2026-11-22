@@ -124,6 +124,34 @@ def parse_periods(html: str) -> dict[int, tuple[str, str]]:
         return {}
 
 
+def expand_week_periods(
+    probes: dict[int, dict[int, tuple[str, str]]], max_week: int
+) -> dict[int, dict[int, tuple[str, str]]]:
+    first = probes.get(1)
+    if not first or max_week < 1:
+        return {}
+    last = probes.get(max_week)
+    if last is not None and last == first:
+        return {week: first for week in range(1, max_week + 1)}
+
+    switch = None
+    for week in range(2, max_week):
+        current = probes.get(week)
+        if current is not None and current != first:
+            switch = week
+            break
+    if switch is None:
+        if last is None:
+            return {week: first for week in range(1, max_week + 1)}
+        switch = max_week
+
+    replacement = last if last is not None else probes[switch]
+    return {
+        week: first if week < switch else replacement
+        for week in range(1, max_week + 1)
+    }
+
+
 def parse_semester_params(html: str) -> tuple[str | None, str | None]:
     semester = _SEMESTER_RE.search(html)
     ids = _IDS_RE.search(html)

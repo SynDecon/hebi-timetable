@@ -8,9 +8,9 @@ from pathlib import Path
 
 import yaml
 
-from .fetcher import FetchError, LoginError, create_session, fetch_course_table
+from .fetcher import FetchError, LoginError, create_session, fetch_course_table, fetch_week_periods
 from .ics_builder import build_calendar
-from .parser import parse_course_table, parse_periods
+from .parser import expand_week_periods, parse_course_table, parse_periods
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "config"
@@ -44,6 +44,7 @@ def _read_yaml(path: Path) -> dict:
 
 
 def run(html_path: str | None, half: bool = False) -> int:
+    session = None
     if html_path:
         html = Path(html_path).read_text(encoding="utf-8", errors="replace")
     else:
@@ -51,12 +52,14 @@ def run(html_path: str | None, half: bool = False) -> int:
         password = os.environ.get("SCHOOL_PASS", "")
         if not user or not password:
             raise LoginError("缺少 SCHOOL_USER / SCHOOL_PASS")
-        html = fetch_course_table(create_session(user, password))
+        session = create_session(user, password)
+        html = fetch_course_table(session)
 
     blocks = parse_course_table(html)
     courses = {block.name for block in blocks}
     if len(courses) < 3:
         raise FetchError(f"仅解析到 {len(courses)} 门课程，判定为登录失败，未写入文件")
+    max_week = max(block.weeks[-1] for block in blocks)
 
     if half:
         keep = set(sorted(courses)[: max(1, len(courses) // 2)])
@@ -71,11 +74,28 @@ def run(html_path: str | None, half: bool = False) -> int:
             {"index": index, "start": start, "end": end}
             for index, (start, end) in periods.items()
         ]
-        print(f"节次时间：使用课表页面解析结果（{len(periods)} 节）")
+        print(f"节次时间：默认周使用页面解析结果（{len(periods)} 节）")
     else:
-        print("节次时间：页面未解析到或不完整，使用 config/semester.yaml 兜底")
+        print("节次时间：默认周未解析到或不完整，使用 config/semester.yaml 兜底")
+
+    week_periods = {}
+    if session:
+        probes = fetch_week_periods(session, html, max_week)
+        week_periods = expand_week_periods(probes, max_week)
+        if week_periods:
+            first = week_periods[1]
+            switch = next(
+                (week for week in range(2, max_week + 1) if week_periods[week] != first),
+                None,
+            )
+            if switch:
+                print(f"节次时间：第 {switch} 周起切换作息（校验 {len(probes)} 周）")
+            else:
+                print(f"节次时间：全学期同一作息（校验 {len(probes)} 周）")
+        else:
+            print("节次时间：按周解析失败，使用默认周时间")
     overrides = _read_yaml(CONFIG_DIR / "overrides.yaml").get("overrides", [])
-    calendar = build_calendar(blocks, semester, overrides)
+    calendar = build_calendar(blocks, semester, overrides, week_periods)
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     temp_file = OUTPUT_FILE.with_name(OUTPUT_FILE.name + ".tmp")
