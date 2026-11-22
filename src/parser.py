@@ -14,6 +14,10 @@ _SEMESTER_RE = re.compile(r"semester\.id=(\d+)")
 _IDS_RE = re.compile(r"[?&]ids=(\d+)")
 _MARSHAL_FROM_RE = re.compile(r"marshalTable\(\s*(\d+)\s*,")
 _TABLE_IDS_RE = re.compile(r"""addInput\(\s*form\s*,\s*["']ids["']\s*,\s*["'](\d+)["']""")
+_PERIOD_RE = re.compile(
+    r"第([一二三四五六七八九十]+)节\s*<br\s*/?>\s*(\d{1,2}:\d{2})\s*<br\s*/?>\s*-\s*<br\s*/?>\s*(\d{1,2}:\d{2})"
+)
+_CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 
 @dataclass
@@ -78,6 +82,46 @@ def weeks_from_bits(bits: str, week_from: int = 2) -> list[int]:
         if week >= 1:
             weeks.append(week)
     return weeks
+
+
+def _cn_number(text: str) -> int | None:
+    if text == "十":
+        return 10
+    if len(text) == 2 and text[0] == "十":
+        digit = _CN_DIGITS.get(text[1])
+        return 10 + digit if digit else None
+    if len(text) == 2 and text[1] == "十":
+        digit = _CN_DIGITS.get(text[0])
+        return digit * 10 if digit else None
+    return _CN_DIGITS.get(text)
+
+
+def _clock(value: str) -> tuple[int, int] | None:
+    hour, minute = (int(part) for part in value.split(":"))
+    if 0 <= hour < 24 and 0 <= minute < 60:
+        return hour, minute
+    return None
+
+
+def parse_periods(html: str) -> dict[int, tuple[str, str]]:
+    try:
+        found: dict[int, tuple[str, str]] = {}
+        for name, start, end in _PERIOD_RE.findall(html):
+            index = _cn_number(name)
+            if index is None or index in found:
+                return {}
+            start_clock, end_clock = _clock(start), _clock(end)
+            if not start_clock or not end_clock or start_clock >= end_clock:
+                return {}
+            found[index] = (
+                f"{start_clock[0]:02d}:{start_clock[1]:02d}",
+                f"{end_clock[0]:02d}:{end_clock[1]:02d}",
+            )
+        if not found or set(found) != set(range(1, max(found) + 1)):
+            return {}
+        return dict(sorted(found.items()))
+    except (TypeError, ValueError):
+        return {}
 
 
 def parse_semester_params(html: str) -> tuple[str | None, str | None]:

@@ -5,7 +5,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.parser import parse_weeks, weeks_from_bits
+from src.parser import parse_periods, parse_weeks, weeks_from_bits
+
+
+PERIOD_LABELS = [
+    ("一", "08:00", "08:45"),
+    ("二", "08:55", "09:40"),
+    ("三", "10:00", "10:45"),
+    ("四", "10:55", "11:40"),
+    ("五", "11:50", "12:35"),
+    ("六", "14:30", "15:15"),
+    ("七", "15:25", "16:10"),
+    ("八", "16:30", "17:15"),
+    ("九", "17:25", "18:10"),
+    ("十", "19:00", "19:45"),
+    ("十一", "19:55", "20:40"),
+]
+
+
+def _periods_html(items):
+    return "".join(
+        f'<font size="2px"> 第{name}节<br>{start}<br>-<br>{end}</font>'
+        for name, start, end in items
+    )
 
 
 def test_range():
@@ -54,6 +76,28 @@ def test_bits():
 
 def test_bits_from_one():
     assert weeks_from_bits("010011", week_from=1) == [2, 5, 6]
+
+
+def test_periods_from_page():
+    expected = {index + 1: (start, end) for index, (_, start, end) in enumerate(PERIOD_LABELS)}
+    assert parse_periods(_periods_html(PERIOD_LABELS)) == expected
+
+
+def test_periods_single_digit_hour():
+    assert parse_periods(_periods_html([("一", "8:00", "8:45")])) == {1: ("08:00", "08:45")}
+
+
+def test_periods_missing_index():
+    assert parse_periods(_periods_html([("一", "08:00", "08:45"), ("三", "10:00", "10:45")])) == {}
+
+
+def test_periods_bad_range():
+    assert parse_periods(_periods_html([("一", "08:00", "08:00")])) == {}
+    assert parse_periods(_periods_html([("一", "24:00", "25:00")])) == {}
+
+
+def test_periods_not_found():
+    assert parse_periods("<html></html>") == {}
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
+# 每学期开学第一周的周一，换学期时只需改这里
 semester_start: 2026-08-31
 timezone: Asia/Shanghai
+# 节次时间优先从课表页面自动解析（春/秋作息随页面变化）；以下 periods 仅在解析失败时兜底
 periods:
   - {index: 1, start: "08:00", end: "08:45"}
   - {index: 2, start: "08:55", end: "09:40"}

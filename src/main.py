@@ -10,7 +10,7 @@ import yaml
 
 from .fetcher import FetchError, LoginError, create_session, fetch_course_table
 from .ics_builder import build_calendar
-from .parser import parse_course_table
+from .parser import parse_course_table, parse_periods
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "config"
@@ -64,6 +64,16 @@ def run(html_path: str | None, half: bool = False) -> int:
         courses = keep
 
     semester = _read_yaml(CONFIG_DIR / "semester.yaml")
+    periods = parse_periods(html)
+    needed = {block.start_period for block in blocks} | {block.end_period for block in blocks}
+    if periods and needed <= set(periods):
+        semester["periods"] = [
+            {"index": index, "start": start, "end": end}
+            for index, (start, end) in periods.items()
+        ]
+        print(f"节次时间：使用课表页面解析结果（{len(periods)} 节）")
+    else:
+        print("节次时间：页面未解析到或不完整，使用 config/semester.yaml 兜底")
     overrides = _read_yaml(CONFIG_DIR / "overrides.yaml").get("overrides", [])
     calendar = build_calendar(blocks, semester, overrides)
 
