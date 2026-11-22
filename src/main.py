@@ -43,7 +43,7 @@ def _read_yaml(path: Path) -> dict:
         return yaml.safe_load(handle) or {}
 
 
-def run(html_path: str | None) -> int:
+def run(html_path: str | None, half: bool = False) -> int:
     if html_path:
         html = Path(html_path).read_text(encoding="utf-8", errors="replace")
     else:
@@ -57,6 +57,11 @@ def run(html_path: str | None) -> int:
     courses = {block.name for block in blocks}
     if len(courses) < 3:
         raise FetchError(f"仅解析到 {len(courses)} 门课程，判定为登录失败，未写入文件")
+
+    if half:
+        keep = set(sorted(courses)[: max(1, len(courses) // 2)])
+        blocks = [block for block in blocks if block.name in keep]
+        courses = keep
 
     semester = _read_yaml(CONFIG_DIR / "semester.yaml")
     overrides = _read_yaml(CONFIG_DIR / "overrides.yaml").get("overrides", [])
@@ -72,12 +77,17 @@ def run(html_path: str | None) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--html", help="本地课表 HTML 路径，跳过抓取")
+    parser.add_argument("--half", action="store_true", help="只发布一半课程，用于测试日历刷新")
     args = parser.parse_args()
     _load_dotenv()
+    half = args.half or os.environ.get("PUBLISH_HALF", "").lower() in {"1", "true", "yes"}
     try:
-        count = run(args.html)
+        count = run(args.html, half)
+        if half:
+            print(f"测试模式：已生成 {OUTPUT_FILE}，只含 {count} 门课程。测完请重跑完整模式恢复")
+        else:
+            print(f"已生成 {OUTPUT_FILE}，共 {count} 门课程")
         _set_output(valid="true", error="", courses=str(count))
-        print(f"已生成 {OUTPUT_FILE}，共 {count} 门课程")
     except Exception as exc:
         _set_output(valid="false", error=str(exc))
         traceback.print_exc()

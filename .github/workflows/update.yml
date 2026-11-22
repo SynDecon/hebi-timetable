@@ -4,6 +4,14 @@ on:
   schedule:
     - cron: "0 18 * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "发布内容（half 只发一半课程，用于测试手机刷新；测完记得重跑 full）"
+        type: choice
+        options:
+          - full
+          - half
+        default: full
 
 permissions:
   contents: read
@@ -36,6 +44,7 @@ jobs:
         env:
           SCHOOL_USER: ${{ secrets.SCHOOL_USER }}
           SCHOOL_PASS: ${{ secrets.SCHOOL_PASS }}
+          PUBLISH_HALF: ${{ inputs.mode == 'half' }}
         run: python -m src.main
 
       - name: 打包
