@@ -238,7 +238,18 @@ def _remember_params(session: requests.Session, text: str) -> tuple[str | None, 
     return semester_id, ids
 
 
+def _remember_home_params(session: requests.Session) -> None:
+    try:
+        response = _request(session, "GET", f"{EAMS_BASE}/eams/homeExt!main.html", headers=_headers())
+        response.encoding = "utf-8"
+        if not _looks_like_login(response.text):
+            _remember_params(session, response.text)
+    except FetchError:
+        pass
+
+
 def fetch_course_table(session: requests.Session) -> str:
+    _remember_home_params(session)
     page = _request(session, "GET", f"{EAMS_BASE}/eams/courseTableForStd.action")
     page.encoding = "utf-8"
     if _looks_like_login(page.text):
@@ -323,21 +334,22 @@ def fetch_course_table(session: requests.Session) -> str:
     )
 
 
-def _period_form(html: str, session: requests.Session) -> dict[str, str] | None:
+def _period_form(html: str, session: requests.Session) -> dict[str, str]:
     semester_id, ids = parse_semester_params(html)
     ids = ids or parse_table_ids(html)
     semester_id = semester_id or getattr(session, "semester_id", None)
     ids = ids or getattr(session, "ids", None)
-    if not semester_id or not ids:
-        return None
-    return {
+    form = {
         "ignoreHead": "1",
         "setting.kind": "std",
         "startWeek": "",
         "project.id": "1",
-        "semester.id": semester_id,
-        "ids": ids,
     }
+    if semester_id:
+        form["semester.id"] = semester_id
+    if ids:
+        form["ids"] = ids
+    return form
 
 
 def _fetch_week_periods(session: requests.Session, form: dict[str, str], week: int) -> dict:
@@ -362,9 +374,8 @@ def _fetch_week_periods(session: requests.Session, form: dict[str, str], week: i
 
 def fetch_week_periods(session: requests.Session, html: str, max_week: int) -> dict[int, dict]:
     form = _period_form(html, session)
-    if not form:
-        print("节次时间：缺少学期或课表参数，跳过按周解析")
-        return {}
+    if "ids" not in form:
+        print("节次时间：未取到课表 ids，尝试仅用会话请求")
     max_week = max(1, min(int(max_week), MAX_WEEKS))
     first = _fetch_week_periods(session, form, 1)
     if not first:
